@@ -15,9 +15,9 @@ Caller → Twilio number → POST /voice  (routes.py → services.build_voice_tw
 ```
 
 **Route split** (as requested):
-- `app/routes.py` — transport only. Accepts the Twilio webhook / WebSocket,
+- `app/api/endpoint/routes.py` — transport only. Accepts the Twilio webhook / WebSocket,
   parses messages, sends responses. No business logic.
-- `app/services.py` — all processing. `CallSession` owns per-call state and
+- `app/api/endpoint/services.py` — all processing. `CallSession` owns per-call state and
   orchestrates STT → LLM → TTS.
 - `app/providers/` — swappable stubs for `stt.py`, `llm.py`, `tts.py`. Each
   file has a comment showing how to wire in a real provider (Deepgram,
@@ -92,8 +92,10 @@ Copy the ngrok hostname (no `https://`, no trailing slash) into `.env` as
 app/
   main.py           FastAPI app + router registration
   config.py         env var loading
-  routes.py         /voice webhook, /media websocket (transport only)
-  services.py       CallSession — orchestrates STT → LLM → TTS
+  api/
+   | endpoint/
+     | routes.py         /voice webhook, /media websocket (transport only)
+     | services.py       CallSession — orchestrates STT → LLM → TTS
   providers/
     stt.py          speech-to-text (stub)
     llm.py          banking assistant logic (stub)

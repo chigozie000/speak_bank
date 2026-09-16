@@ -12,22 +12,36 @@ import base64
 import json
 import logging
 
+from twilio.twiml.voice_response import VoiceResponse, Connect
+
+from asyncio import Queue
+
+from fastapi import WebSocket, WebSocketDisconnect
+
 from app.providers.llm import generate_reply
 from app.providers.stt import StubSTTSession
 from app.providers.tts import synthesize_to_frames
 
+
 logger = logging.getLogger("services")
 
 
-def build_voice_twiml(stream_url: str) -> str:
+
+def build_voice_twiml(stream_url: str) -> VoiceResponse:
     """Return the TwiML instructing Twilio to open a media stream."""
-    return f"""<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Say>Connecting you to your banking assistant.</Say>
-    <Connect>
-        <Stream url="{stream_url}" />
-    </Connect>
-</Response>"""
+    resp=VoiceResponse()
+    resp.say('Hello,  Welcome to SpeakBank!')
+    resp.say('Am your customer care Ai agent.')
+    resp.say("you can speak to us in English, Igbo, Hausa and Yoruba.")
+    resp.say("kindly wait......")
+
+    connect= Connect()
+    connect.stream(url=stream_url)
+
+    resp.append(connect)
+
+    return resp
+
 
 
 class CallSession:
@@ -91,6 +105,75 @@ class CallSession:
         logger.info("Call ended: sid=%s", self.call_sid)
 
 
+
+
 def parse_twilio_ws_message(raw_message: str) -> dict:
     """Parse a raw Twilio Media Streams WebSocket text frame into a dict."""
     return json.loads(raw_message)
+
+
+
+
+async def incoming_procerssor(websocket:WebSocket, in_queue:Queue, session:CallSession):
+    """maintain connection, 
+        recieves task fro the routes, 
+        parses the test to json, and queue in in_queue.
+    """
+    try:
+        while True:
+            raw_message = await websocket.receive_text()
+            data = parse_twilio_ws_message(raw_message)
+            await in_queue.put(data)
+
+    except WebSocketDisconnect:
+        print("disconnected")
+
+    finally:
+        if session:
+            session.handle_stop()
+
+
+
+async def task_procerssor(in_queue:Queue, out_queue:Queue, session:CallSession):
+    """
+        get task from in queue and extract the event of the streamed data,
+        processes individual events---start, media and stop
+        for media it takes our audio to STT and  to LLM and finally to Bank backend --> LLM
+        queues the responds of bank in out_queue
+    """
+    while True:
+        data= await in_queue.get()
+        event = data.get("event")
+
+        if event == "start":
+            start_data = data["start"]
+            session = CallSession(call_sid=start_data.get("callSid", "unknown"))
+            session.handle_start(start_data)
+
+        elif event == "media" and session is not None:
+            reply_text = session.handle_media(data["media"]["payload"])
+            await out_queue.put(reply_text)
+    
+        elif event == "stop" and session is not None:
+            session.handle_stop()
+            break
+
+
+
+async def outgoing_procerssor(websocket:WebSocket, out_queue, session:CallSession):
+    """
+        takes reply from out_que and build and outbound frame,
+        then stream back to twilio.
+    """
+    reply_text= out_queue.get()
+    if reply_text:
+        for frame_message in session.build_outbound_frames(reply_text):
+            await websocket.send_json(frame_message)
+
+
+
+
+
+
+
+

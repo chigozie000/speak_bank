@@ -29,8 +29,14 @@ SYSTEM_PROMPT = (
 
 def generate_reply(caller_number: str, user_text: str, history: list[dict]) -> str:
     """Given the caller's utterance, return the assistant's spoken reply."""
+    ####################intent layer with json output############################################
+
+    #############################################################################################
+
+    ##################### bank endpoint layer###################################################
     text = user_text.lower()
     account = MOCK_ACCOUNTS.get(caller_number, MOCK_ACCOUNTS["default"])
+    ############################################################################################
 
     if "balance" in text:
         return f"Your current balance is ${account['balance']}."

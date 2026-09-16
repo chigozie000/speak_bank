@@ -1,19 +1,22 @@
-import logging
-
 import asyncio
+import logging
 
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
 
-
 from app.config import PUBLIC_HOSTNAME
-from .services import CallSession, build_voice_twiml, incoming_procerssor, task_procerssor, outgoing_procerssor, parse_twilio_ws_message
+from .services import (
+    SessionHolder,
+    build_voice_twiml,
+    incoming_processor,
+    outgoing_processor,
+    parse_twilio_ws_message,
+    task_processor,
+)
 
 
 logger = logging.getLogger("routes")
 router = APIRouter()
-
-
 
 
 ############################ Twilio voice webhook endpoint #########################################
@@ -32,12 +35,7 @@ async def voice_webhook(request: Request):
     return Response(content=str(twiml), media_type="application/xml")
 
 
-
-
-
-
-
-##############################stream endpoint####################################################################
+############################## stream endpoint ###################################################
 @router.websocket("/media")
 async def media_stream(websocket: WebSocket):
     """
@@ -46,19 +44,22 @@ async def media_stream(websocket: WebSocket):
     delegated to a CallSession in services.py.
     """
     await websocket.accept()
-    session: CallSession | None = None
 
-    in_queue= asyncio.Queue()
-    out_queue= asyncio.Queue()
+    in_queue: asyncio.Queue = asyncio.Queue()
+    out_queue: asyncio.Queue = asyncio.Queue()
 
-    incomming_task= asyncio.create_task(incoming_procerssor(websocket, in_queue, session))
-    processiong_task= asyncio.create_task(task_procerssor(in_queue, out_queue, session))
-    outgoing_task= asyncio.create_task(outgoing_procerssor(websocket, out_queue, session))
+    # Shared across all three tasks so that task_processor creating the
+    # CallSession on the "start" event is visible to the others too.
+    holder = SessionHolder()
+
+    incoming_task = asyncio.create_task(incoming_processor(websocket, in_queue, holder))
+    processing_task = asyncio.create_task(task_processor(in_queue, out_queue, holder))
+    outgoing_task = asyncio.create_task(outgoing_processor(websocket, out_queue, holder))
 
     try:
-        await incomming_task
-        
-    finally:
-        gathered=asyncio.gather(processiong_task, outgoing_task)
-        gathered.cancel()
+        await incoming_task
 
+    finally:
+        processing_task.cancel()
+        outgoing_task.cancel()
+        await asyncio.gather(processing_task, outgoing_task, return_exceptions=True)

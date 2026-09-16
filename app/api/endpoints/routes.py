@@ -56,7 +56,9 @@ async def media_stream(websocket: WebSocket):
     outgoing_task= asyncio.create_task(outgoing_procerssor(websocket, out_queue, session))
 
     try:
-        gathered=asyncio.gather(incomming_task,processiong_task, outgoing_task)
+        await incomming_task
+        
     finally:
+        gathered=asyncio.gather(processiong_task, outgoing_task)
         gathered.cancel()
 

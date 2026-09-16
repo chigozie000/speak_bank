@@ -147,14 +147,17 @@ async def task_procerssor(in_queue:Queue, out_queue:Queue, session:CallSession):
 
         if event == "start":
             start_data = data["start"]
+            print("start data:", start_data)
             session = CallSession(call_sid=start_data.get("callSid", "unknown"))
             session.handle_start(start_data)
 
         elif event == "media" and session is not None:
+            print("media data:", data["media"])
             reply_text = session.handle_media(data["media"]["payload"])
             await out_queue.put(reply_text)
     
         elif event == "stop" and session is not None:
+            print("stop data:", data["stop"])
             session.handle_stop()
             break
 

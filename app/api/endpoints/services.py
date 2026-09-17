@@ -8,6 +8,7 @@ reply into outbound audio. routes.py should stay thin and just call
 into here.
 """
 
+import asyncio
 import base64
 import json
 import logging
@@ -70,7 +71,7 @@ class CallSession:
         just completed, else None.
         """
         audio_chunk = base64.b64decode(payload_b64)
-        self.stt.feed_audio(audio_chunk)
+        self.stt.feed_audio_nowait(audio_chunk)
 
         chunk = self.stt.poll_transcript()
         if chunk is None or not chunk.is_final:
@@ -159,11 +160,51 @@ async def task_processor(in_queue: Queue, out_queue: Queue, holder: SessionHolde
         if event == "start":
             start_data = data["start"]
             logger.debug("start data: %s", start_data)
-            holder.session = CallSession(call_sid=start_data.get("callSid", "unknown"))
+            call_sid = start_data.get("callSid", "unknown")
+
+            # Twilio's docs say mediaFormat is always mulaw/8000/mono,
+            # but it costs nothing to verify instead of assuming — if
+            # this ever doesn't match, our STT/TTS byte math would be
+            # silently wrong.
+            media_format = start_data.get("mediaFormat", {})
+            if media_format and (
+                media_format.get("encoding") != "audio/x-mulaw"
+                or media_format.get("sampleRate") != 8000
+                or media_format.get("channels") != 1
+            ):
+                logger.warning(
+                    "Unexpected Twilio mediaFormat for call %s: %s (expected audio/x-mulaw/8000/mono)",
+                    call_sid,
+                    media_format,
+                )
+
+            try:
+                # CallSession.__init__ builds the Azure STT connection,
+                # which is blocking network I/O. Run it in a worker
+                # thread so it can't freeze the event loop (and
+                # therefore incoming_processor / outgoing_processor)
+                # if Azure is slow, unreachable, or misconfigured.
+                holder.session = await asyncio.wait_for(
+                    asyncio.to_thread(CallSession, call_sid), timeout=10
+                )
+            except asyncio.TimeoutError:
+                logger.error("CallSession startup timed out for call %s (Azure STT unreachable?)", call_sid)
+                break
+            except Exception:
+                logger.exception("Failed to start CallSession for call %s", call_sid)
+                break
             holder.session.handle_start(start_data)
 
         elif event == "media" and holder.session is not None:
-            reply_text = holder.session.handle_media(data["media"]["payload"])
+            media = data["media"]
+            # If the stream was ever configured with tracks=both_tracks,
+            # Twilio also echoes back our own outbound (TTS) audio as
+            # media.track == "outbound". Feeding that into STT would
+            # mean transcribing our own voice, so only inbound (the
+            # caller) goes to Azure.
+            if media.get("track", "inbound") != "inbound":
+                continue
+            reply_text = holder.session.handle_media(media["payload"])
             if reply_text:
                 await out_queue.put(reply_text)
 
@@ -171,6 +212,14 @@ async def task_processor(in_queue: Queue, out_queue: Queue, holder: SessionHolde
             logger.debug("stop data: %s", data.get("stop"))
             holder.session.handle_stop()
             break
+
+        elif event == "dtmf":
+            digit = data.get("dtmf", {}).get("digit")
+            logger.info("DTMF digit received on call %s: %s", holder.session.call_sid if holder.session else "?", digit)
+            # No IVR keypad handling yet — hook in here if/when needed.
+
+        elif event == "mark":
+            logger.debug("mark acked by Twilio: %s", data.get("mark", {}).get("name"))
 
 
 async def outgoing_processor(websocket: WebSocket, out_queue: Queue, holder: SessionHolder):

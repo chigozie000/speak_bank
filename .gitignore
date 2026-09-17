@@ -65,3 +65,5 @@ pnpm-debug.log*
 *.key
 credentials.json
 service-account*.json
+
+keyrtf

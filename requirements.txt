@@ -6,3 +6,7 @@ twilio
 pydantic
 
 sounddevice
+openai==3.14.1
+azure-cognitiveservices-speech==1.51.2
+
+audioop-lts
